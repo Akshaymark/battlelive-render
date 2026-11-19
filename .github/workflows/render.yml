@@ -1,0 +1,85 @@
+name: Render Rat Army video
+
+on:
+  workflow_dispatch:
+
+# Change these two lines for each new episode
+env:
+  COMP: RatArmy1
+  FRAMES: 1665
+
+jobs:
+  chunk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Unzip project
+        run: |
+          unzip -q -o *.zip -d work
+          echo "PROJ=$(dirname $(find work -name remotion.config.ts -not -path '*/node_modules/*' | head -1))" >> $GITHUB_ENV
+      - name: Install
+        run: cd "$PROJ" && npm install --no-audit --no-fund
+      - name: Render my part (muted)
+        run: |
+          cd "$PROJ"
+          TOTAL=$FRAMES
+          PER=$(( (TOTAL + 19) / 20 ))
+          START=$(( ${{ matrix.part }} * PER ))
+          END=$(( START + PER - 1 ))
+          if [ $END -ge $TOTAL ]; then END=$(( TOTAL - 1 )); fi
+          echo "Frames $START-$END of $TOTAL"
+          npx remotion render src/index.ts $COMP "$GITHUB_WORKSPACE/part_$(printf %02d ${{ matrix.part }}).mp4" \
+            --frames=$START-$END --muted --gl=swangle --concurrency=4
+      - uses: actions/upload-artifact@v4
+        with:
+          name: part-${{ matrix.part }}
+          path: part_*.mp4
+          retention-days: 2
+
+  audio:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Unzip and install
+        run: |
+          unzip -q -o *.zip -d work
+          PROJ=$(dirname $(find work -name remotion.config.ts -not -path '*/node_modules/*' | head -1))
+          cd "$PROJ" && npm install --no-audit --no-fund
+          npx remotion render src/index.ts $COMP "$GITHUB_WORKSPACE/audio.wav" --codec=wav --gl=swangle
+      - uses: actions/upload-artifact@v4
+        with:
+          name: audio
+          path: audio.wav
+          retention-days: 2
+
+  join:
+    needs: [chunk, audio]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: parts
+          merge-multiple: true
+      - name: Join parts and add audio
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+          cd parts
+          ls part_*.mp4 | sort | sed "s/^/file '/; s/$/'/" > list.txt
+          ffmpeg -y -f concat -safe 0 -i list.txt -c copy video.mp4
+          ffmpeg -y -i video.mp4 -i audio.wav -c:v copy -c:a aac -b:a 192k -shortest -movflags +faststart ../final.mp4
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FINAL_VIDEO
+          path: final.mp4
+          retention-days: 7
